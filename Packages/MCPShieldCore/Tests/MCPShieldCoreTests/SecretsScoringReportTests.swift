@@ -53,9 +53,16 @@ import Testing
         #expect(total == 59)   // would be 91 without the cap
     }
 
+    @Test func highCapsAt84() {
+        let (total, per) = Scoring.score([finding(.high)])
+        #expect(per["config"] == 88)
+        #expect(total == 84)   // would be 96 ("Good") without the cap
+        #expect(Scoring.grade(total) == "Needs work")
+    }
+
     @Test func weightsAndFloor() {
-        // config 100-12-5 = 83 -> 0.30*83 + 35 + 25 + 10 = 94.9 -> 95
-        #expect(Scoring.score([finding(.high), finding(.medium)]).total == 95)
+        // config 100-5-5-1 = 89 -> 0.30*89 + 35 + 25 + 10 = 96.7 -> 97
+        #expect(Scoring.score([finding(.medium), finding(.medium), finding(.low)]).total == 97)
         let many = Array(repeating: finding(.high), count: 20)
         #expect(Scoring.score(many).perCategory["config"] == 0)
     }

@@ -31,7 +31,7 @@ Missing or broken files are skipped and shown with a note in the sidebar.
 
 ## Scoring
 
-Each category (config, secrets, tools, privacy) starts at 100 and loses points per finding: critical 25, high 12, medium 5, low 1. The total is a weighted average (secrets 35%, config 30%, tools 25%, privacy 10%). Any critical finding caps the total at 59. Grades: 85+ Good, 60–84 Needs work, below 60 At risk.
+Each category (config, secrets, tools, privacy) starts at 100 and loses points per finding: critical 25, high 12, medium 5, low 1. The total is a weighted average (secrets 35%, config 30%, tools 25%, privacy 10%). Any critical finding caps the total at 59, and any high finding caps it at 84, so one serious problem can't be averaged away into a green score. Grades: 85+ Good, 60–84 Needs work, below 60 At risk.
 
 Tools and privacy are not checked in v1, so they show `--` in the app.
 

@@ -8,7 +8,9 @@ public enum Scoring {
         for c in Category.allCases { per[c] = 100 }
         for f in findings { per[f.category] = max(0, (per[f.category] ?? 100) - f.severity.penalty) }
         var total = Int((Category.allCases.reduce(0.0) { $0 + Double(per[$1] ?? 100) * (weights[$1] ?? 0) }).rounded())
+        // Caps keep one serious problem from being averaged away into a green score.
         if findings.contains(where: { $0.severity == .critical }) { total = min(total, 59) }
+        if findings.contains(where: { $0.severity == .high }) { total = min(total, 84) }
         return (total, Dictionary(uniqueKeysWithValues: per.map { ($0.key.rawValue, $0.value) }))
     }
 
