@@ -36,6 +36,7 @@ struct AboutView: View {
             Text("Scores are heuristics, measured on a labelled test set. They are not a guarantee of safety.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(24)
         .frame(width: 460)

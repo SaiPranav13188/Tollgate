@@ -2,9 +2,33 @@
 
 A native macOS app that finds the MCP servers set up on your Mac, checks their configs for risky settings, and gives each one a 0–100 score with a fix for every problem.
 
-![Tollgate showing a server with a leaked key and a shell launch](docs/screenshot.png)
+![Tollgate showing a server with a leaked key and a shell launch](docs/screenshots/at-risk.png)
 
 Tollgate **reads config files only**. It never starts a server, never changes a file and never uploads anything.
+
+## Screenshots
+
+All screenshots use the demo configs from `scripts/make-demo-configs.sh`. Every key in them is fake.
+
+**A leaked GitHub token.** The token is recognised by its format and shown redacted. A critical finding caps the score at 59.
+
+![A GitHub server with a plain-text token, scored 59 At risk](docs/screenshots/leaked-token.png)
+
+**Access to the whole home folder.** A filesystem server given `~` gets a high finding and is capped at 84, Needs work.
+
+![A filesystem server with access to the home folder, scored 84 Needs work](docs/screenshots/home-folder-access.png)
+
+**A remote server over plain HTTP.** The API key in the URL is hidden in the app as well.
+
+![A remote server using http://, scored 84 Needs work](docs/screenshots/plain-http.png)
+
+**A clean config.** A pinned package with no secrets scores 100.
+
+![A pinned server with no findings, scored 100 Good](docs/screenshots/clean.png)
+
+**About and responsible use.**
+
+<img src="docs/screenshots/about.png" alt="About window with the responsible-use rules" width="460">
 
 ## What it checks
 

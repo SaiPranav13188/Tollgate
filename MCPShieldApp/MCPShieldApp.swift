@@ -10,7 +10,12 @@ struct MCPShieldApp: App {
         WindowGroup("Tollgate", id: "main") {
             RootView()
                 .environmentObject(model)
-                .task { await model.scan() }
+                .task {
+                    await model.scan()
+                    #if DEBUG
+                    if UserDefaults.standard.bool(forKey: "showAbout") { openWindow(id: "about") }
+                    #endif
+                }
         }
         .defaultSize(width: 1040, height: 680)
         .commands {

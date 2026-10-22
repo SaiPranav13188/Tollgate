@@ -31,6 +31,11 @@ import UniformTypeIdentifiers
         self.results = results.sorted { ($0.score, $0.server.name) < ($1.score, $1.server.name) }
         self.files = files
         if selection == nil || !results.contains(where: { $0.id == selection }) { selection = self.results.first?.id }
+        #if DEBUG
+        // For README screenshots: `open Tollgate.app --args -selectServer <name>`
+        if let name = UserDefaults.standard.string(forKey: "selectServer"),
+           let match = self.results.first(where: { $0.server.name == name }) { selection = match.id }
+        #endif
         lastScan = Date()
         isScanning = false
     }
