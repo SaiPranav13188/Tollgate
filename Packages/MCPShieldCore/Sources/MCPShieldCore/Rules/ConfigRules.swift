@@ -35,17 +35,86 @@ public enum ConfigRules {
 
     // MARK: CFG-002: unpinned package
 
+    // v1 baseline treated any "@" as pinned and missed Python-style pins; see EvalSet/results-*.md.
+    enum Ecosystem { case npm, python }
+
     static func unpinnedPackage(_ s: ServerConfig) -> [Finding] {
-        let launchers: Set<String> = ["npx", "uvx", "pipx"]
-        guard let cmd = s.command, launchers.contains((cmd as NSString).lastPathComponent) else { return [] }
-        let pkg = s.args.first(where: { !$0.hasPrefix("-") }) ?? ""
-        let pinned = pkg.dropFirst().contains("@") && !pkg.hasSuffix("@latest")  // skips a leading scope "@"
-        guard !pinned else { return [] }
+        guard let cmd = s.command else { return [] }
+        let tokens = cmd.split(separator: " ").map(String.init) + s.args
+        guard let (eco, spec) = packageSpec(tokens), !isPinned(spec, eco) else { return [] }
         return [Finding(ruleID: "CFG-002", title: "Package version is not pinned",
             severity: .medium, category: .config, target: s.name,
             detail: "Each launch may download new code.",
-            fix: "Pin an exact version, for example package@1.2.3.",
-            evidence: pkg.isEmpty ? nil : pkg)]
+            fix: eco == .npm ? "Pin an exact version, for example package@1.2.3."
+                             : "Pin an exact version, for example package==1.2.3.",
+            evidence: spec.isEmpty ? nil : spec)]
+    }
+
+    /// The package a launcher will download, e.g. `["npx", "-y", "pkg@1.0.0"]` -> (.npm, "pkg@1.0.0").
+    static func packageSpec(_ tokens: [String]) -> (Ecosystem, String)? {
+        guard let first = tokens.first else { return nil }
+        var rest = Array(tokens.dropFirst())
+        switch (first as NSString).lastPathComponent {
+        case "npx", "bunx":
+            return (.npm, firstPositional(rest, valueFlags: ["--package", "-p", "--call", "-c"], specFlags: ["--package", "-p"]))
+        case "pnpm", "yarn":
+            guard rest.first == "dlx" else { return nil }
+            return (.npm, firstPositional(Array(rest.dropFirst()), valueFlags: ["--package", "-p"], specFlags: ["--package", "-p"]))
+        case "uvx":
+            return (.python, firstPositional(rest, valueFlags: ["--from", "--python", "-p", "--with", "--index-url", "--extra-index-url"],
+                                             specFlags: ["--from"]))
+        case "pipx":
+            guard rest.first == "run" else { return nil }
+            rest.removeFirst()
+            return (.python, firstPositional(rest, valueFlags: ["--spec", "--python", "--index-url"], specFlags: ["--spec"]))
+        case let sh where shells.contains(sh):
+            // `bash -c "npx -y pkg"`: look inside the command string.
+            guard let i = rest.firstIndex(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("c") }),
+                  i + 1 < rest.count else { return nil }
+            let inner = rest[(i + 1)...].joined(separator: " ")
+                .split(whereSeparator: { " ;&|'\"".contains($0) }).map(String.init)
+            guard let start = inner.firstIndex(where: { ["npx", "bunx", "uvx", "pipx"].contains(($0 as NSString).lastPathComponent) })
+            else { return nil }
+            return packageSpec(Array(inner[start...]))
+        default:
+            return nil
+        }
+    }
+
+    /// A spec flag's value (`--from x`, `--package=x`) wins; otherwise the first argument that is not a flag or a flag's value.
+    private static func firstPositional(_ args: [String], valueFlags: Set<String>, specFlags: Set<String>) -> String {
+        var i = 0, positional: String?
+        while i < args.count {
+            let a = args[i]
+            if let eq = a.firstIndex(of: "="), a.hasPrefix("-") {
+                if specFlags.contains(String(a[..<eq])) { return String(a[a.index(after: eq)...]) }
+            } else if valueFlags.contains(a) {
+                if specFlags.contains(a), i + 1 < args.count { return args[i + 1] }
+                i += 1
+            } else if !a.hasPrefix("-"), positional == nil {
+                positional = a
+            }
+            i += 1
+        }
+        return positional ?? ""
+    }
+
+    static func isPinned(_ spec: String, _ eco: Ecosystem) -> Bool {
+        func matches(_ s: Substring, _ re: String) -> Bool { s.range(of: re, options: .regularExpression) != nil }
+        switch eco {
+        case .npm:
+            let body = spec.hasPrefix("@") ? spec.dropFirst() : Substring(spec)   // skip a leading scope "@"
+            guard let at = body.lastIndex(of: "@") else { return false }
+            return matches(body[body.index(after: at)...], #"^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.\-]+)?$"#)
+        case .python:
+            if let r = spec.range(of: "===") ?? spec.range(of: "==") {
+                return matches(spec[r.upperBound...], #"^\s*\d[0-9A-Za-z.\-+]*$"#)
+            }
+            if let at = spec.lastIndex(of: "@"), !spec.contains("://") {
+                return matches(spec[spec.index(after: at)...], #"^v?\d+(\.\d+)*([0-9A-Za-z.\-+]*)$"#)
+            }
+            return false
+        }
     }
 
     // MARK: CFG-003: remote server over plain HTTP

@@ -21,6 +21,21 @@ import Testing
     @Test func cfg002SkipsPinnedNpx() {
         #expect(!ruleIDs(server(command: "npx", args: ["-y", "@modelcontextprotocol/server-memory@2025.4.25"])).contains("CFG-002"))
     }
+    @Test func cfg002UnderstandsEachLauncher() {
+        let pinned: [[String]] = [
+            ["uvx", "mcp-server-git==0.6.2"], ["uvx", "--from", "mcp-server-git==0.6.2", "mcp-server-git"],
+            ["uvx", "ruff-mcp@0.6.0"], ["pipx", "run", "some-mcp==1.0.0"],
+            ["npx", "-y", "--package=@scope/tool@2.0.0", "tool-bin"], ["pnpm", "dlx", "srv@1.0.0"],
+        ]
+        let unpinned: [[String]] = [
+            ["npx", "-y", "pkg@^1.2.0"], ["npx", "-y", "pkg@~1.4.0"], ["npx", "-y", "pkg@1.2"],
+            ["bunx", "some-mcp"], ["pipx", "run", "mcp-server-x"], ["uvx", "pkg@latest"],
+            ["bash", "-c", "npx -y risky-mcp"],
+        ]
+        for t in pinned { #expect(!ruleIDs(server(command: t[0], args: Array(t.dropFirst()))).contains("CFG-002"), "\(t)") }
+        for t in unpinned { #expect(ruleIDs(server(command: t[0], args: Array(t.dropFirst()))).contains("CFG-002"), "\(t)") }
+        #expect(!ruleIDs(server(command: "docker", args: ["run", "-i", "mcp/fetch"])).contains("CFG-002"))
+    }
 
     // CFG-003
     @Test func cfg003FiresOnRemoteHTTP() {
