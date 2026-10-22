@@ -83,7 +83,15 @@ The App Sandbox is off because Tollgate has to read config files that belong to 
 
 ### Opening a downloaded build
 
-Release builds are not signed with an Apple Developer ID, so macOS will warn you the first time. Right-click `Tollgate.app`, choose **Open**, then confirm **Open**.
+Download `Tollgate-1.0.0.zip` from [Releases](https://github.com/SaiPranav13188/Tollgate/releases), unzip it and move `Tollgate.app` to Applications. It runs on Apple Silicon and Intel Macs.
+
+Release builds are not signed with an Apple Developer ID, so macOS blocks the first launch. To open it:
+
+1. Open `Tollgate.app` once and close the warning.
+2. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Tollgate message.
+3. Confirm with **Open**.
+
+Or, from Terminal: `xattr -dr com.apple.quarantine /Applications/Tollgate.app`
 
 ## Project layout
 
