@@ -11,6 +11,7 @@ import Testing
     @Test(arguments: [
         (Fake.github, "GitHub token"), (Fake.aws, "AWS access key"), (Fake.google, "Google API key"),
         (Fake.anthropic, "Anthropic key"), (Fake.openAI, "OpenAI key"),
+        (Fake.githubPAT, "GitHub fine-grained token"), (Fake.slack, "Slack token"),
         ("-----BEGIN RSA PRIVATE KEY-----\nabc", "Private key block"),
     ])
     func detectsEachPattern(secret: String, name: String) {
@@ -22,6 +23,14 @@ import Testing
 
     @Test func anthropicKeyIsNotAlsoReportedAsOpenAI() {
         #expect(Secrets.scan(Fake.anthropic, target: "t").map(\.title) == ["Anthropic key found"])
+    }
+
+    @Test func placeholdersAreNotSecrets() {
+        for p in ["sk-xxxxxxxxxxxxxxxxxxxxxxxx", "xoxb-your-bot-token", "<YOUR_TOKEN>", "YOUR_API_KEY_HERE"] {
+            #expect(Secrets.isPlaceholder(p), "\(p)")
+            #expect(Secrets.scan(p, target: "t").isEmpty, "\(p)")
+        }
+        for real in [Fake.github, Fake.openAI, Fake.slack, Fake.plainToken] { #expect(!Secrets.isPlaceholder(real)) }
     }
 
     @Test func ordinaryTextIsClean() {
@@ -75,13 +84,17 @@ import Testing
 }
 
 @Suite struct ReportTests {
-    let secrets = [Fake.github, Fake.aws, Fake.google, Fake.anthropic, Fake.openAI, Fake.plainToken, "hunter2hunter2"]
+    let secrets = [Fake.github, Fake.aws, Fake.google, Fake.anthropic, Fake.openAI, Fake.plainToken, "hunter2hunter2",
+                   Fake.slack, "D0ckerPlainS3cret", "C0nnPassw0rd"]
 
     var leakyServers: [ServerConfig] {
         [
             server("everything", command: "bash",
                    args: ["-c", "OPENAI_KEY=\(Fake.openAI) node s.js", "--api-key", Fake.plainToken, "--token=\(Fake.anthropic)"],
                    env: ["GITHUB_TOKEN": Fake.github, "AWS_ACCESS_KEY_ID": Fake.aws, "DB_PASSWORD": "hunter2hunter2"]),
+            server("docker", command: "docker",
+                   args: ["run", "-e", "API_TOKEN=D0ckerPlainS3cret", "-e", "SLACK_BOT_TOKEN=\(Fake.slack)", "img",
+                          "postgresql://app:C0nnPassw0rd@db.example.com/prod"]),
             server("remote", url: "https://user:hunter2hunter2@mcp.example.com/sse?key=\(Fake.google)",
                    headers: ["Authorization": "Bearer \(Fake.github)"]),
         ]
@@ -105,8 +118,8 @@ import Testing
         let data = try Report.json(for: Scanner.scan(leakyServers))
         let doc = try JSONDecoder().decode(JSONValue.self, from: data)
         #expect(doc.object?["tool"]?.string == "Tollgate")
-        #expect(doc.object?["summary"]?.object?["servers"] == .number(2))
-        #expect(doc.object?["results"]?.array?.count == 2)
+        #expect(doc.object?["summary"]?.object?["servers"] == .number(3))
+        #expect(doc.object?["results"]?.array?.count == 3)
     }
 }
 

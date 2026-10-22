@@ -13,6 +13,33 @@ import Testing
         #expect(!ruleIDs(server(command: "docker", env: ["GITHUB_TOKEN": "${GITHUB_TOKEN}"])).contains("CFG-001"))
     }
 
+    @Test func cfg001FindsSecretsOutsideEnv() {
+        let cases: [(ServerConfig, String)] = [
+            (server("r", url: "https://x.example.com/mcp", headers: ["Authorization": "Bearer \(Fake.plainToken)"]), "r.headers.Authorization"),
+            (server("r", url: "https://x.example.com/mcp", headers: ["X-API-Key": Fake.plainToken]), "r.headers.X-API-Key"),
+            (server("r", url: "https://x.example.com/sse?api_key=\(Fake.plainToken)"), "r.url"),
+            (server("c", command: "node", args: ["s.js", "--api-key", Fake.plainToken]), "c.args[2]"),
+            (server("c", command: "node", args: ["s.js", "--token=\(Fake.plainToken)"]), "c.args[1]"),
+            (server("d", command: "docker", args: ["run", "-e", "GITHUB_TOKEN=\(Fake.plainToken)", "img"]), "d.args[2]"),
+            (server("p", command: "npx", env: ["DATABASE_URL": "postgresql://postgres:Sup3rS3cret@db.example.com/app"]), "p.env.DATABASE_URL"),
+        ]
+        for (s, target) in cases {
+            #expect(ConfigRules.analyze(s).contains { $0.ruleID == "CFG-001" && $0.target == target }, "\(target)")
+        }
+    }
+    @Test func cfg001SkipsNamesAndValuesThatAreNotSecrets() {
+        let clean: [ServerConfig] = [
+            server(command: "node", env: ["SSH_KEY_PATH": "/Users/dev/.ssh/id_ed25519", "PRIMARY_KEY_FIELD": "customer_identifier",
+                                          "MAX_TOKENS": "4096", "AWS_ACCESS_KEY_ID_NAME": "production-default"]),
+            server(command: "uvx", args: ["llm@1.0.0", "--api-key-env", "OPENAI_API_KEY", "--max-tokens", "4096", "--key-file", "/a/b.json"]),
+            server(url: "https://x.example.com/mcp", headers: ["Authorization": "Bearer ${GITHUB_TOKEN}"]),
+            server(command: "npx", env: ["SLACK_BOT_TOKEN": "xoxb-your-bot-token", "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxxxxxx",
+                                         "BRAVE_API_KEY": "YOUR_API_KEY_HERE", "GITHUB_TOKEN": "<YOUR_TOKEN>"]),
+            server(command: "npx", args: ["pg@1.0.0", "postgresql://localhost:5432/dev", "postgres://u:<your-password>@h/db"]),
+        ]
+        for s in clean { #expect(!ruleIDs(s).contains("CFG-001"), "\(s)") }
+    }
+
     // CFG-002
     @Test func cfg002FiresOnUnpinnedNpx() {
         #expect(ruleIDs(server(command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"])).contains("CFG-002"))
@@ -47,6 +74,13 @@ import Testing
         #expect(!ruleIDs(server(url: "http://127.0.0.1:3000/mcp")).contains("CFG-003"))
     }
 
+    @Test func cfg003ChecksURLsGivenToProxies() {
+        #expect(ruleIDs(server(command: "npx", args: ["-y", "mcp-remote@0.1.18", "http://legacy.example.com/sse"])).contains("CFG-003"))
+        #expect(ruleIDs(server(command: "npx", args: ["-y", "supergateway@2.1.0", "--sse=http://10.0.0.5/sse"])).contains("CFG-003"))
+        #expect(!ruleIDs(server(command: "npx", args: ["-y", "mcp-remote@0.1.18", "http://127.0.0.1:8787/sse"])).contains("CFG-003"))
+        #expect(!ruleIDs(server(command: "node", args: ["s.js", "--docs", "http://example.com"])).contains("CFG-003"))
+    }
+
     // CFG-004
     @Test func cfg004FiresOnShellDashC() {
         #expect(ruleIDs(server(command: "bash", args: ["-c", "cd ~/srv && node index.js"])).contains("CFG-004"))
@@ -66,6 +100,14 @@ import Testing
     @Test func cfg005SkipsProjectFolderAndNonFilesystemServers() {
         #expect(!ruleIDs(server("filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/Users/me/projects/app"])).contains("CFG-005"))
         #expect(!ruleIDs(server("git", command: "uvx", args: ["mcp-server-git==0.6.2", "--repository", "~"])).contains("CFG-005"))
+    }
+
+    @Test func cfg005ChecksDockerMounts() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        #expect(ruleIDs(server("db", command: "docker", args: ["run", "-v", "/:/host:ro", "img"])).contains("CFG-005"))
+        #expect(ruleIDs(server("db", command: "docker", args: ["run", "--volume=\(home):/data", "img"])).contains("CFG-005"))
+        #expect(ruleIDs(server("db", command: "docker", args: ["run", "--mount", "type=bind,src=\(home),dst=/p", "img"])).contains("CFG-005"))
+        #expect(!ruleIDs(server("db", command: "docker", args: ["run", "-v", "\(home)/code/app:/data", "img"])).contains("CFG-005"))
     }
 
     // CFG-006

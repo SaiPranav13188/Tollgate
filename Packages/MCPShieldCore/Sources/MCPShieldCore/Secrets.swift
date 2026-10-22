@@ -12,6 +12,8 @@ public enum Secrets {
     public static let patterns: [Pattern] = [
         .init(name: "Google API key", regex: #"AIza[0-9A-Za-z_\-]{35}"#, severity: .critical),
         .init(name: "GitHub token", regex: #"gh[pousr]_[A-Za-z0-9]{30,}"#, severity: .critical),
+        .init(name: "GitHub fine-grained token", regex: #"github_pat_[A-Za-z0-9_]{22,}"#, severity: .critical),
+        .init(name: "Slack token", regex: #"xox[abposr]-\d{6,}-[0-9A-Za-z\-]{8,}"#, severity: .critical),
         .init(name: "AWS access key", regex: #"AKIA[0-9A-Z]{16}"#, severity: .critical),
         .init(name: "Private key block", regex: #"-----BEGIN [A-Z ]*PRIVATE KEY-----"#, severity: .critical),
         .init(name: "Anthropic key", regex: #"sk-ant-[A-Za-z0-9_\-]{20,}"#, severity: .critical),
@@ -28,12 +30,24 @@ public enum Secrets {
         var out: [(Pattern, String)] = []
         for (p, re) in compiled {
             for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length))
-            where !taken.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) {
+            where !taken.contains(where: { NSIntersectionRange($0, m.range).length > 0 })
+                && !isPlaceholder(ns.substring(with: m.range)) {
                 taken.append(m.range)
                 out.append((p, ns.substring(with: m.range)))
             }
         }
         return out
+    }
+
+    static let placeholderWords: Set<String> = ["your", "xxx", "placeholder", "changeme", "here", "example",
+                                                "dummy", "redacted", "replace", "sample", "todo"]
+
+    /// Values copied from a README without being filled in: `<YOUR_TOKEN>`, `sk-xxxx...`, `xoxb-your-bot-token`.
+    public static func isPlaceholder(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        if lower.contains("xxxx") || lower.contains("****") || lower.contains("...") { return true }
+        if lower.contains("<") && lower.contains(">") { return true }
+        return !Set(ToolRules.words(value)).isDisjoint(with: placeholderWords)
     }
 
     public static func scan(_ text: String, target: String) -> [Finding] {

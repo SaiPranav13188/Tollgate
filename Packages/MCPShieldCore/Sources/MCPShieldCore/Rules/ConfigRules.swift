@@ -6,7 +6,7 @@ public enum ConfigRules {
 
     public static func analyze(_ s: ServerConfig) -> [Finding] {
         var out: [Finding] = []
-        out += secretInEnv(s)
+        out += secretInConfig(s)
         out += unpinnedPackage(s)
         out += insecureTransport(s)
         out += shellLaunch(s)
@@ -15,19 +15,85 @@ public enum ConfigRules {
         return out
     }
 
-    // MARK: CFG-001: secret-looking values in env
+    // MARK: CFG-001: secrets written into the config (env, headers, args, URLs)
 
-    static func secretInEnv(_ s: ServerConfig) -> [Finding] {
+    // v1 baseline only read env and matched pieces of words; see EvalSet/results-*.md.
+    static let secretWords: Set<String> = ["key", "token", "secret", "password", "passwd", "pwd", "apikey",
+                                           "auth", "authorization", "credential", "credentials", "cookie"]
+    /// `SSH_KEY_PATH`, `--api-key-env`, `--token-limit`, `ACCESS_KEY_ID` name a secret's location or size, not the secret.
+    static let notSecretWords: Set<String> = ["path", "file", "dir", "field", "name", "id", "env", "var",
+                                              "limit", "max", "count", "size", "type", "url", "endpoint", "host"]
+
+    static func isSecretName(_ name: String) -> Bool {
+        let w = ToolRules.words(name)
+        return w.contains(where: secretWords.contains) && !w.contains(where: notSecretWords.contains)
+    }
+
+    /// A value that is the secret itself, not a reference to one (`${TOKEN}`), a path, an env var name or a placeholder.
+    static func isLiteralSecret(_ raw: String) -> Bool {
+        var v = raw.trimmingCharacters(in: .whitespaces)
+        for scheme in ["bearer ", "basic ", "token "] where v.lowercased().hasPrefix(scheme) { v = String(v.dropFirst(scheme.count)) }
+        guard v.count >= 12, !v.contains("://"), !Secrets.isPlaceholder(v) else { return false }
+        if v.contains("${") || v.contains("$(") || v.hasPrefix("$") || v.contains("{{") { return false }
+        if v.hasPrefix("/") || v.hasPrefix("~/") || v.hasPrefix("./") { return false }
+        if v.range(of: #"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$"#, options: .regularExpression) != nil { return false }
+        return true
+    }
+
+    /// The password in `scheme://user:password@host`, if it is written out.
+    static func connectionPassword(_ value: String) -> String? {
+        guard let r = value.range(of: #"[A-Za-z][A-Za-z0-9+.\-]*://[^:/@\s]+:([^@\s]+)@"#, options: .regularExpression) else { return nil }
+        let match = value[r].dropLast()                          // drop the "@"
+        guard let colon = match.lastIndex(of: ":") else { return nil }
+        let pw = String(match[match.index(after: colon)...])
+        if pw.count < 3 || pw.contains("${") || pw.hasPrefix("$") || Secrets.isPlaceholder(pw) { return nil }
+        return pw
+    }
+
+    static func secretInConfig(_ s: ServerConfig) -> [Finding] {
         var out: [Finding] = []
+        var seen = Set<String>()
+        func add(_ target: String, _ value: String, _ detail: String) {
+            guard seen.insert(target).inserted else { return }
+            out.append(Finding(ruleID: "CFG-001", title: "Secret stored in plain text in config",
+                severity: .high, category: .secrets, target: target, detail: detail,
+                fix: "Remove it from the file and load it from the Keychain or a secrets manager. Rotate it, since the file may have been shared or backed up.",
+                evidence: Secrets.redact(value)))
+        }
+        let plain = "Anyone who can read this file, a backup of it, or a screenshot of it gets the secret."
+        let inConnection = "The connection string includes its password. " + plain
+        let inURL = "Secrets in a URL also end up in server logs and browser history. " + plain
+
         for (key, value) in s.env.sorted(by: { $0.key < $1.key }) {
-            let looksSecret = key.range(of: "(KEY|TOKEN|SECRET|PASSWORD)", options: [.regularExpression, .caseInsensitive]) != nil
-            let isPlaceholder = value.hasPrefix("${") || value.hasPrefix("<") || value.lowercased().hasPrefix("your")
-            if looksSecret && value.count >= 12 && !isPlaceholder {
-                out.append(Finding(ruleID: "CFG-001", title: "Secret stored in plain text in config",
-                    severity: .high, category: .secrets, target: "\(s.name).env.\(key)",
-                    detail: "Anyone who can read this file, a backup of it, or a screenshot of it gets the secret.",
-                    fix: "Remove it from the file and load it from the Keychain or a secrets manager. Rotate it, since the file may have been shared or backed up.",
-                    evidence: Secrets.redact(value)))
+            let target = "\(s.name).env.\(key)"
+            if isSecretName(key) && isLiteralSecret(value) { add(target, value, plain) }
+            if let pw = connectionPassword(value) { add(target, pw, inConnection) }
+        }
+        let authHeaders: Set<String> = ["authorization", "proxy-authorization", "cookie"]
+        for (key, value) in s.headers.sorted(by: { $0.key < $1.key })
+        where (authHeaders.contains(key.lowercased()) || isSecretName(key)) && isLiteralSecret(value) {
+            add("\(s.name).headers.\(key)", value, plain)
+        }
+        for (i, arg) in s.args.enumerated() {
+            let target = "\(s.name).args[\(i)]"
+            if let pw = connectionPassword(arg) { add(target, pw, inConnection); continue }
+            // `--api-key=x` and docker's `-e NAME=x`
+            if let eq = arg.firstIndex(of: "=") {
+                let name = arg[..<eq].drop(while: { $0 == "-" })
+                if name.range(of: #"^[A-Za-z_][A-Za-z0-9_\-]*$"#, options: .regularExpression) != nil,
+                   isSecretName(String(name)), isLiteralSecret(String(arg[arg.index(after: eq)...])) {
+                    add(target, String(arg[arg.index(after: eq)...]), plain)
+                }
+            } else if arg.hasPrefix("-"), isSecretName(arg), i + 1 < s.args.count,
+                      !s.args[i + 1].hasPrefix("-"), isLiteralSecret(s.args[i + 1]) {
+                add("\(s.name).args[\(i + 1)]", s.args[i + 1], plain)
+            }
+        }
+        if let url = s.url {
+            if let pw = connectionPassword(url) { add("\(s.name).url", pw, inURL) }
+            for item in URLComponents(string: url)?.queryItems ?? []
+            where isSecretName(item.name) && isLiteralSecret(item.value ?? "") {
+                add("\(s.name).url", item.value ?? "", inURL)
             }
         }
         return out
@@ -119,13 +185,26 @@ public enum ConfigRules {
 
     // MARK: CFG-003: remote server over plain HTTP
 
+    /// Local bridges that connect to a remote server given as an argument.
+    static let proxies = ["mcp-remote", "supergateway", "mcp-proxy"]
+
     static func insecureTransport(_ s: ServerConfig) -> [Finding] {
-        guard let url = s.url, url.lowercased().hasPrefix("http://"), !isLocalhost(url) else { return [] }
-        return [Finding(ruleID: "CFG-003", title: "Remote server uses plain HTTP",
-            severity: .high, category: .config, target: "\(s.name).url",
-            detail: "Traffic, including any tokens, can be read or changed by anyone on the network path.",
-            fix: "Use an https:// URL.",
-            evidence: Secrets.redactMatches(in: hostOnly(url)))]
+        var urls: [(target: String, url: String)] = []
+        if let url = s.url { urls.append(("\(s.name).url", url)) }
+        let launch = ([s.command ?? ""] + s.args).joined(separator: " ").lowercased()
+        if proxies.contains(where: launch.contains) {
+            for (i, arg) in s.args.enumerated() {
+                let value = arg.hasPrefix("-") ? arg.split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init) ?? "" : arg
+                urls.append(("\(s.name).args[\(i)]", value))
+            }
+        }
+        return urls.filter { $0.url.lowercased().hasPrefix("http://") && !isLocalhost($0.url) }.map { target, url in
+            Finding(ruleID: "CFG-003", title: "Remote server uses plain HTTP",
+                severity: .high, category: .config, target: target,
+                detail: "Traffic, including any tokens, can be read or changed by anyone on the network path.",
+                fix: "Use an https:// URL.",
+                evidence: Secrets.redactMatches(in: hostOnly(url)))
+        }
     }
 
     static func isLocalhost(_ url: String) -> Bool {
@@ -161,18 +240,39 @@ public enum ConfigRules {
     // MARK: CFG-005: folder access that is too wide
 
     static func broadFolderAccess(_ s: ServerConfig) -> [Finding] {
-        let haystack = ([s.name, s.command ?? ""] + s.args).joined(separator: " ").lowercased()
-        guard haystack.contains("filesystem") else { return [] }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let broad: Set<String> = ["/", "~", "~/", "$HOME", "${HOME}", "/Users", "/Users/", home, home + "/"]
-        let hits = s.args.filter { broad.contains($0) }
-        return hits.map { arg in
+        let haystack = ([s.name, s.command ?? ""] + s.args).joined(separator: " ").lowercased()
+        // Any container that mounts a broad folder can read it, whatever the server does.
+        let hits = (haystack.contains("filesystem") ? s.args : []) + dockerMountSources(s)
+        return hits.filter { broad.contains($0) }.map { path in
             Finding(ruleID: "CFG-005", title: "Folder access is too wide",
                 severity: .high, category: .config, target: s.name,
-                detail: "The server can read (and possibly change) every file under \(arg), including keys, documents and other apps' data.",
+                detail: "The server can read (and possibly change) every file under \(path), including keys, documents and other apps' data.",
                 fix: "Give access to one specific project folder instead.",
-                evidence: arg)
+                evidence: path)
         }
+    }
+
+    /// Host folders in `docker run -v SRC:DST` and `--mount type=bind,src=SRC,...`.
+    static func dockerMountSources(_ s: ServerConfig) -> [String] {
+        guard let cmd = s.command, ["docker", "podman"].contains((cmd as NSString).lastPathComponent) else { return [] }
+        var out: [String] = []
+        for (i, arg) in s.args.enumerated() {
+            let (flag, inline) = arg.hasPrefix("--") && arg.contains("=")
+                ? (String(arg.prefix(while: { $0 != "=" })), String(arg.drop(while: { $0 != "=" }).dropFirst()))
+                : (arg, nil)
+            guard ["-v", "--volume", "--mount"].contains(flag) else { continue }
+            guard let value = inline ?? (i + 1 < s.args.count ? s.args[i + 1] : nil) else { continue }
+            if flag == "--mount" {
+                for part in value.split(separator: ",") where part.hasPrefix("src=") || part.hasPrefix("source=") {
+                    out.append(String(part.drop(while: { $0 != "=" }).dropFirst()))
+                }
+            } else {
+                out.append(String(value.prefix(while: { $0 != ":" })))
+            }
+        }
+        return out
     }
 
     // MARK: CFG-006: executable that others can change

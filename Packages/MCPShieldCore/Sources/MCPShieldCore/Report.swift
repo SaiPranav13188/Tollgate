@@ -3,7 +3,7 @@ import Foundation
 /// JSON export. No full secret may ever appear in the output.
 public enum Report {
     public static let toolName = "Tollgate"
-    public static let version = "1.0.0"
+    public static let version = "1.1.0"
 
     /// A server config with every value that could hold a secret redacted.
     public struct RedactedServer: Codable, Sendable {
@@ -84,6 +84,7 @@ public enum Report {
             let texts = Array(s.env.values) + Array(s.headers.values) + s.args + [s.command, s.url].compactMap { $0 }
             for t in texts { for m in Secrets.matches(in: t) { out.insert(m.value) } }
             for (k, v) in s.env where looksSecretKey(k) && v.count >= 8 { out.insert(v) }
+            for t in texts { if let pw = ConfigRules.connectionPassword(t) { out.insert(pw) } }
             for v in s.headers.values where v.count >= 8 { out.insert(v) }
             for (i, a) in s.args.enumerated() {
                 if let (_, value) = splitFlag(a), looksSecretKey(a), value.count >= 8 { out.insert(value) }
@@ -99,8 +100,9 @@ public enum Report {
         k.range(of: "(KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL)", options: [.regularExpression, .caseInsensitive]) != nil
     }
     static func looksSecretFlag(_ a: String) -> Bool { a.hasPrefix("-") && !a.contains("=") && looksSecretKey(a) }
+    /// `--flag=value`, or docker's `NAME=value`.
     static func splitFlag(_ a: String) -> (String, String)? {
-        guard a.hasPrefix("-"), let eq = a.firstIndex(of: "=") else { return nil }
+        guard let eq = a.firstIndex(of: "="), !a[..<eq].contains("/"), !a[..<eq].contains(":") else { return nil }
         return (String(a[..<eq]), String(a[a.index(after: eq)...]))
     }
 

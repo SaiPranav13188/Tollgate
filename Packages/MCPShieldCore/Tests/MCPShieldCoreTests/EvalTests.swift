@@ -47,12 +47,24 @@ import Testing
     struct Counts { var tp = 0, fp = 0, fn = 0 }
 
     @Test func precisionAndRecallPerRule() throws {
-        let labelsData = try Data(contentsOf: Self.evalDir.appending(path: "labels.json"))
-        let labels = try JSONDecoder().decode([String: [String: [String]]].self, from: labelsData)
-        #expect(labels.count >= 30, "the plan asks for 30 or more configs")
+        let table = try Self.evaluate(Self.evalDir)
+        print("\n=== EVAL RESULTS ===\n" + table + "=== END EVAL ===")
+    }
 
-        let fixtures = try Self.makeFixtures()
-        var subs = Self.fakes
+    /// Configs written after the rules were tuned on the main set, and never tuned on.
+    @Test func heldOutSet() throws {
+        let table = try Self.evaluate(Self.evalDir.appending(path: "holdout"), minimumConfigs: 15)
+        print("\n=== HELD-OUT RESULTS ===\n" + table + "=== END HELD-OUT ===")
+    }
+
+    /// Runs every config in `dir/configs` against `dir/labels.json` and returns the precision/recall table.
+    static func evaluate(_ dir: URL, minimumConfigs: Int = 30) throws -> String {
+        let labelsData = try Data(contentsOf: dir.appending(path: "labels.json"))
+        let labels = try JSONDecoder().decode([String: [String: [String]]].self, from: labelsData)
+        #expect(labels.count >= minimumConfigs, "the plan asks for 30 or more configs")
+
+        let fixtures = try makeFixtures()
+        var subs = fakes
         subs["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
         subs["FIXTURES"] = fixtures.path
 
@@ -60,7 +72,7 @@ import Testing
         var mistakes: [String] = []
         var serverCount = 0
         for (file, expectedByServer) in labels.sorted(by: { $0.key < $1.key }) {
-            var text = try String(contentsOf: Self.evalDir.appending(path: "configs/\(file)"), encoding: .utf8)
+            var text = try String(contentsOf: dir.appending(path: "configs/\(file)"), encoding: .utf8)
             for (k, v) in subs { text = text.replacingOccurrences(of: "{{\(k)}}", with: v) }
             let servers = ConfigDiscovery.parse(data: Data(text.utf8), label: "Eval", path: file)
             #expect(Set(servers.map(\.name)) == Set(expectedByServer.keys), "\(file): labels and servers differ")
@@ -70,7 +82,7 @@ import Testing
                 let result = Scanner.scan(s)
                 let fired = Set(result.findings.map(\.ruleID))
                 let expected = Set(expectedByServer[s.name] ?? [])
-                for rule in Self.rules {
+                for rule in rules {
                     switch (fired.contains(rule), expected.contains(rule)) {
                     case (true, true): counts[rule, default: .init()].tp += 1
                     case (true, false): counts[rule, default: .init()].fp += 1; mistakes.append("FP \(rule) \(file) \(s.name)")
@@ -80,7 +92,7 @@ import Testing
                 }
                 // No full fake secret may appear in any finding.
                 let encoded = String(decoding: try JSONEncoder().encode(result.findings), as: UTF8.self)
-                for (name, fake) in Self.fakes where !name.hasSuffix("PRIVATE_KEY") {
+                for (name, fake) in fakes where !name.hasSuffix("PRIVATE_KEY") {
                     #expect(!encoded.contains(fake), "\(file) \(s.name) leaked \(name)")
                 }
             }
@@ -90,12 +102,12 @@ import Testing
         var table = "Evaluated \(labels.count) configs, \(serverCount) servers.\n\n"
         table += "| Rule | TP | FP | FN | Precision | Recall |\n|---|---|---|---|---|---|\n"
         var total = Counts()
-        for rule in Self.rules {
+        for rule in rules {
             let c = counts[rule] ?? .init()
             total.tp += c.tp; total.fp += c.fp; total.fn += c.fn
             table += "| \(rule) | \(c.tp) | \(c.fp) | \(c.fn) | \(pct(c.tp, c.tp + c.fp)) | \(pct(c.tp, c.tp + c.fn)) |\n"
         }
         table += "| **All** | \(total.tp) | \(total.fp) | \(total.fn) | \(pct(total.tp, total.tp + total.fp)) | \(pct(total.tp, total.tp + total.fn)) |\n"
-        print("\n=== EVAL RESULTS ===\n" + table + "\nMistakes:\n" + mistakes.joined(separator: "\n") + "\n=== END EVAL ===")
+        return table + "\nMistakes:\n" + mistakes.joined(separator: "\n") + "\n"
     }
 }

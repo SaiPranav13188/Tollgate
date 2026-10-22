@@ -34,13 +34,15 @@ All screenshots use the demo configs from `scripts/make-demo-configs.sh`. Every 
 
 | Rule | Severity | Detects | Fix |
 |---|---|---|---|
-| CFG-001 | High | A secret-looking value written directly in a server's `env` | Load it from the Keychain or a secrets manager, and rotate it |
+| CFG-001 | High | A secret written directly in the config: in `env`, in `headers`, in `args` (`--api-key x`, `--token=x`, `-e NAME=x`), in URL query values, or as the password in a connection string like `postgres://user:pw@host` | Load it from the Keychain or a secrets manager, and rotate it |
 | CFG-002 | Medium | A package launched without a pinned version (`npx -y pkg`, `pkg@latest`, `uvx pkg`, `^1.2` ranges) | Pin an exact version |
-| CFG-003 | High | A remote `url` over plain `http://` (not localhost) | Use HTTPS |
+| CFG-003 | High | A remote server over plain `http://` (not localhost), including URLs passed to proxies like `mcp-remote` and `supergateway` | Use HTTPS |
 | CFG-004 | Medium | A server launched through a shell (`sh -c`, `bash -c`) | Run the executable directly |
-| CFG-005 | High | A filesystem server given `/`, `~` or your whole home folder | Give it one project folder |
+| CFG-005 | High | A filesystem server given `/`, `~` or your whole home folder, or a Docker container with one of those mounted | Give it one project folder |
 | CFG-006 | Low | A server executable or script that other users can modify | Use a path only you can change |
-| SEC-001 | Critical | A known key format (GitHub, AWS, Google, Anthropic, OpenAI, private key blocks) anywhere in the config | Remove it and revoke the key |
+| SEC-001 | Critical | A known key format anywhere in the config: GitHub (classic and fine-grained), Slack, AWS, Google, Anthropic, OpenAI, private key blocks | Remove it and revoke the key |
+
+Values that are clearly not secrets are skipped: references like `${GITHUB_TOKEN}`, README placeholders like `<YOUR_TOKEN>` or `sk-xxxx...`, file paths, and names such as `SSH_KEY_PATH` or `--max-tokens`.
 
 Secrets are always redacted (`sk-pro...ke`) in the app and in the JSON export. A test checks that a full secret never appears in either.
 
@@ -61,26 +63,42 @@ Tools and privacy are not checked in v1, so they show `--` in the app.
 
 ## Accuracy
 
-Tollgate's rules are heuristics, so they are measured. [`EvalSet/`](EvalSet/) holds 36 labelled configs (69 servers): copies of public README examples, deliberately insecure configs with fake keys, and secure ones. The `EvalTests` test runs all of them and prints precision and recall per rule.
+Tollgate's rules are heuristics, so they are measured on two labelled sets, using fake keys only:
 
-| Rule | TP | FP | FN | Precision | Recall |
-|---|---|---|---|---|---|
-| CFG-001 | 9 | 2 | 5 | 82% | 64% |
-| CFG-002 | 14 | 0 | 0 | 100% | 100% |
-| CFG-003 | 3 | 0 | 1 | 100% | 75% |
-| CFG-004 | 4 | 0 | 0 | 100% | 100% |
-| CFG-005 | 3 | 0 | 1 | 100% | 75% |
-| CFG-006 | 3 | 0 | 0 | 100% | 100% |
-| SEC-001 | 9 | 0 | 2 | 100% | 82% |
-| **All** | **45** | **2** | **9** | **96%** | **83%** |
+- **Main set** ([`EvalSet/configs`](EvalSet/configs)): 36 configs (69 servers), with copies of public README examples, deliberately insecure configs and secure ones. The rules were tuned on this set.
+- **Held-out set** ([`EvalSet/holdout`](EvalSet/holdout)): 16 configs (21 servers), written and labelled *before* the v1.1 rule changes and never used to tune them. They cover the same kinds of problems in new forms, such as MongoDB URIs, `X-API-Key` headers, Docker `-v /:/host`, `supergateway`, Slack user tokens and placeholder keys.
 
-**Before and after.** In the first run, CFG-002 (unpinned packages) was the worst rule at 62% precision and 71% recall. It misread `uvx --from pkg==1.0`, `pipx run pkg==1.0` and `npx --package=pkg@1.0` as unpinned, and missed `bunx` and `^`/`~` version ranges. After teaching it each launcher's flags and pin syntax, it reached 100% / 100%, and the overall score went from 84% precision and 76% recall to 96% and 83%. Full lists of mistakes: [before](EvalSet/results-before.md), [after](EvalSet/results-after.md).
+The `EvalTests` test runs both and prints precision and recall per rule.
 
-**Known gaps** (the remaining misses):
-- CFG-001 does not look at secrets in `headers`, in `args`, or inside connection strings like `postgres://user:password@host`, and it raises false alarms on placeholders like `xoxb-your-bot-token` and on key names that only look secret (`PRIMARY_KEY_FIELD`, `SSH_KEY_PATH`).
-- SEC-001 does not yet know fine-grained GitHub tokens (`github_pat_`) or Slack tokens (`xoxb-`).
-- CFG-003 misses `http://` URLs passed to `mcp-remote` as an argument.
-- CFG-005 misses a home folder mounted into a Docker container.
+| Rule | Main set: precision | Main set: recall | Held-out: precision | Held-out: recall |
+|---|---|---|---|---|
+| CFG-001 secrets in config | 100% (14/14) | 100% (14/14) | 100% (7/7) | 100% (7/7) |
+| CFG-002 unpinned package | 100% (14/14) | 100% (14/14) | n/a | n/a |
+| CFG-003 plain HTTP | 100% (4/4) | 100% (4/4) | 100% (1/1) | 100% (1/1) |
+| CFG-004 shell launch | 100% (4/4) | 100% (4/4) | n/a | n/a |
+| CFG-005 wide folder access | 100% (4/4) | 100% (4/4) | 100% (1/1) | 100% (1/1) |
+| CFG-006 writable executable | 100% (3/3) | 100% (3/3) | n/a | n/a |
+| SEC-001 known key format | 100% (11/11) | 100% (11/11) | 100% (4/4) | 100% (4/4) |
+| **All** | **100% (54/54)** | **100% (54/54)** | **100% (13/13)** | **100% (13/13)** |
+
+### How it got there
+
+| Version | Main set precision / recall | Held-out precision / recall | What changed |
+|---|---|---|---|
+| First run | 84% / 76% | – | |
+| v1.0 | 96% / 83% | 50% / 23% | CFG-002 learned each launcher's flags and pin syntax ([before](EvalSet/results-before.md), [after](EvalSet/results-after.md)) |
+| v1.1 | 100% / 100% | 100% / 100% | CFG-001 reads headers, args, URLs and connection strings and matches whole words; new Slack and fine-grained GitHub patterns; placeholders skipped; CFG-003 checks proxy URLs; CFG-005 checks Docker mounts ([main](EvalSet/results-v1.1.md), [held-out before](EvalSet/holdout/results-before.md), [after](EvalSet/holdout/results-after.md)) |
+
+### What these numbers do not mean
+
+100% on 90 servers does not mean Tollgate is never wrong. Both sets are small, and the same person wrote the held-out configs and the fixes, knowing which kinds of mistakes they were aimed at. The held-out set shows the fixes work beyond the exact cases they were tuned on. It is not an independent benchmark.
+
+Cases still likely to fool it:
+- A secret under a name with no secret word (`SLACK_XOXB`, `CONN`), unless it matches a known key format.
+- A real secret that happens to contain a placeholder word such as `example` or `here`.
+- A plain-HTTP URL passed to a launcher other than the proxies it knows.
+
+If Tollgate gets one of your configs wrong, an issue with a redacted copy of it is the most useful bug report.
 
 ## Build and run
 
@@ -107,7 +125,7 @@ The App Sandbox is off because Tollgate has to read config files that belong to 
 
 ### Opening a downloaded build
 
-Download `Tollgate-1.0.0.zip` from [Releases](https://github.com/SaiPranav13188/Tollgate/releases), unzip it and move `Tollgate.app` to Applications. It runs on Apple Silicon and Intel Macs.
+Download `Tollgate-1.1.0.zip` from [Releases](https://github.com/SaiPranav13188/Tollgate/releases), unzip it and move `Tollgate.app` to Applications. It runs on Apple Silicon and Intel Macs.
 
 Release builds are not signed with an Apple Developer ID, so macOS blocks the first launch. To open it:
 

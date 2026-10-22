@@ -8,6 +8,8 @@ enum Fake {
     static let google = "AIza" + String(repeating: "Fake_", count: 7)            // 35 after the prefix
     static let anthropic = "sk-ant-" + String(repeating: "fakeFAKE", count: 4)
     static let openAI = "sk-proj-" + String(repeating: "FakeFake", count: 4)
+    static let githubPAT = "github_pat_11FAKE0000_" + String(repeating: "FAKEfake", count: 7)
+    static let slack = "xoxb-000000000000-0000000000000-" + String(repeating: "FAKEfake", count: 3)
     static let plainToken = "f4ke-t0ken-" + String(repeating: "x9", count: 10)  // no known pattern
 }
 
